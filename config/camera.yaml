@@ -1,0 +1,10 @@
+# Camera Configuration for Hikvision RTSP Stream
+# Enter the actual RTSP stream URL below (credentials must not be committed)
+camera:
+  rtsp_url: ""
+  fallback_video: "test_videos/Outlet_Sample_2_Banasree.avi"
+  width: 1280
+  height: 720
+  target_fps: 15
+  buffer_size: 1
+  reconnect_interval_sec: 2.0

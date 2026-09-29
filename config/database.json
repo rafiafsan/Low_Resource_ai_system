@@ -1,0 +1,7 @@
+{
+    "host": "172.17.4.199",
+    "port": "5432",
+    "database": "retail_ai_analytics",
+    "user": "postgres",
+    "password": "123456"
+}

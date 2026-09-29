@@ -1,0 +1,112 @@
+# =============================================================================
+# Python Bytecode & Cache
+# =============================================================================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# =============================================================================
+# Virtual Environments
+# =============================================================================
+venv/
+.venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# =============================================================================
+# PyInstaller Build Artifacts & Standalone Distributions
+# =============================================================================
+build/
+dist/
+*.zip
+*.tar.gz
+*.spec.bak
+
+# =============================================================================
+# Heavy AI/ML Weights & Checkpoints (Exceeds Git limits)
+# =============================================================================
+*.pt
+*.pth
+*.pth.tar
+*.onnx
+*.bin
+*.weights
+models/*
+!models/.gitkeep
+mivolo_system/model/*.pt
+mivolo_system/model/*.pth
+mivolo_system/model/*.tar
+mivolo_system/model/*.pth.tar
+
+# =============================================================================
+# Video Files & Test Footage (Large Media)
+# =============================================================================
+test_videos/
+videos/
+*.mp4
+*.avi
+*.mkv
+*.mov
+*.wmv
+*.flv
+
+# =============================================================================
+# Runtime Logs, Output & Databases
+# =============================================================================
+*.log
+retail_ai.log
+logs/
+*.csv
+output/
+*.db
+*.sqlite
+*.sqlite3
+
+# =============================================================================
+# Temporary Scratch & Debugging
+# =============================================================================
+scratch/
+temp/
+tmp/
+=
+
+# =============================================================================
+# Environment Variables & Secrets
+# =============================================================================
+.env
+.env.local
+.env.*.local
+
+# =============================================================================
+# IDE & OS Generated Files
+# =============================================================================
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+.DS_Store
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
