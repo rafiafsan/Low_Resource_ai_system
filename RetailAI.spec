@@ -17,7 +17,7 @@ hidden_imports = [
     "numpy",
     "psutil",
     "yaml",
-    "psycopg2",
+    "requests",
     "supervision",
     "omegaconf",
     "antlr4",

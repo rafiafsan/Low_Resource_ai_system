@@ -30,10 +30,21 @@ class EventManager:
         self.previous_side = {}
         self.pending_entries = {}
         self.pending_exits = {}
+        self.completed_entries = set()
+        self.completed_exits = set()
         self.completed_tracks = set()
+        self.track_aliases = {}
 
         self.validated_entry_count = 0
         self.validated_exit_count = 0
+
+    def get_canonical_id(self, track_id: int) -> int:
+        visited = set()
+        cid = track_id
+        while cid in self.track_aliases and cid not in visited:
+            visited.add(cid)
+            cid = self.track_aliases[cid]
+        return cid
 
     def evict_lost_tracks(self, lost_ids):
         """Evict lost tracks from previous_side to prevent unbounded memory growth."""
@@ -45,12 +56,15 @@ class EventManager:
     def process(self, track_id, center, gate_points, inside_reference):
         if not gate_points or len(gate_points) < 2 or not inside_reference:
             return None
-        
-        if track_id in self.completed_tracks:
+
+        track_id = self.get_canonical_id(track_id)
+
+        # If a track has completed its entire visit (exited), ignore further events
+        if track_id in self.completed_exits:
             return None
 
         current_side = get_side(center, gate_points[0], gate_points[1], inside_reference)
-        
+
         if current_side == "GATE":
             return None
 
@@ -59,22 +73,21 @@ class EventManager:
 
         if previous is None:
             return None
-        
+
         current_time = datetime.now()
 
         # ENTRY
-
         if previous == "OUTSIDE" and current_side == "INSIDE":
+            # If this customer already has a validated entry, ignore duplicate entry crossing
+            if track_id in self.completed_entries:
+                return None
 
             self.entry_count += 1
 
             # Cancel pending EXIT
             if track_id in self.pending_exits:
-
                 del self.pending_exits[track_id]
-
                 self.exit_count -= 1
-
                 return {
                     "track_id": track_id,
                     "event_type": "ENTRY",
@@ -92,23 +105,12 @@ class EventManager:
                 "validated": False
             }
 
-
-    
         # EXIT
-
         if previous == "INSIDE" and current_side == "OUTSIDE":
-
-            self.exit_count += 1
-
-            # Cancel pending ENTRY
+            # Cancel pending ENTRY if customer turns around before entry validation (<60s)
             if track_id in self.pending_entries:
-
                 del self.pending_entries[track_id]
-
                 self.entry_count -= 1
-
-                self.pending_exits[track_id] = current_time
-
                 return {
                     "track_id": track_id,
                     "event_type": "EXIT",
@@ -117,6 +119,7 @@ class EventManager:
                     "cancelled_entry": True
                 }
 
+            self.exit_count += 1
             self.pending_exits[track_id] = current_time
 
             return {
@@ -128,29 +131,19 @@ class EventManager:
 
         return None
 
-
     def validate_pending(self):
         current_time = datetime.now()
-
         validated_events = []
 
-
         # VALIDATE ENTRY
-        
         for track_id in list(self.pending_entries.keys()):
-
             entry_time = self.pending_entries[track_id]
-
-            elapsed_seconds = (
-                current_time - entry_time
-            ).total_seconds()
+            elapsed_seconds = (current_time - entry_time).total_seconds()
 
             if elapsed_seconds >= self.min_entry_dwell_seconds:
-
                 self.validated_entry_count += 1
-
                 del self.pending_entries[track_id]
-
+                self.completed_entries.add(track_id)
                 self.completed_tracks.add(track_id)
 
                 validated_events.append({
@@ -161,23 +154,15 @@ class EventManager:
                     "duration_seconds": elapsed_seconds
                 })
 
-
         # VALIDATE EXIT
-
         for track_id in list(self.pending_exits.keys()):
-
             exit_time = self.pending_exits[track_id]
-
-            elapsed_seconds = (
-                current_time - exit_time
-            ).total_seconds()
+            elapsed_seconds = (current_time - exit_time).total_seconds()
 
             if elapsed_seconds >= self.min_exit_dwell_seconds:
-
                 self.validated_exit_count += 1
-
                 del self.pending_exits[track_id]
-
+                self.completed_exits.add(track_id)
                 self.completed_tracks.add(track_id)
 
                 validated_events.append({

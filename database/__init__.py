@@ -1,3 +1,3 @@
-from .db_manager import DatabaseManager
+from .db_manager import ApiManager, DatabaseManager
 
-__all__ = ["DatabaseManager"]
+__all__ = ["ApiManager", "DatabaseManager"]

@@ -9,6 +9,15 @@ PROJECT_ROOT = os.path.abspath(".")
 MIVOLO_ROOT = os.path.join(PROJECT_ROOT, "mivolo_system")
 
 hidden_imports = [
+    # GUI Modules (Pure Windowed Mode)
+    "tkinter",
+    "tkinter.ttk",
+    "tkinter.scrolledtext",
+    "tkinter.filedialog",
+    "tkinter.messagebox",
+    "gui",
+    "gui.retail_gui",
+    
     # Core Frameworks
     "torch",
     "torchvision",
@@ -44,6 +53,7 @@ hidden_imports = [
     "timm.models",
     
     # Internal Modules
+    "calibrate_gates",
     "camera.rtsp_reader",
     "config.settings",
     "database.db_manager",
@@ -94,7 +104,7 @@ excludes = [
 ]
 
 a = Analysis(
-    ["app.py"],
+    ["main_gui.py"],
     pathex=[PROJECT_ROOT, MIVOLO_ROOT],
     binaries=binaries,
     datas=datas,
@@ -116,12 +126,12 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name="RetailAI_v2",
+    name="Retail_Analytics_v2",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
     upx=True,
-    console=True,
+    console=False,  # PURE WINDOWED GUI (NO BLACK CMD/TERMINAL WINDOW)
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,
@@ -138,5 +148,5 @@ coll = COLLECT(
     strip=False,
     upx=True,
     upx_exclude=[],
-    name="RetailAI_v2",
+    name="Retail_Analytics_v2",
 )

@@ -53,15 +53,17 @@ demographics:
   max_samples: 4
   queue_size: 4
   cpu_threads: 1
-  female_threshold: 0.50
+  female_threshold: 0.40
 
-database:
-  credentials_file: "config/database.json"
+api:
+  enabled: true
+  base_url: "http://ai.prangroup.com:8021"
+  api_key: "secret_outlet_token_banasree"
   occupancy_interval_minutes: 20.0
   metrics_sync_interval_seconds: 5.0
 
 shop:
-  shop_id: 1
+  shop_id: 2
   camera_id: "cam_01"
 
 safeguards:

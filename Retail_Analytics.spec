@@ -44,6 +44,7 @@ hidden_imports = [
     "timm.models",
     
     # Internal Modules
+    "calibrate_gates",
     "camera.rtsp_reader",
     "config.settings",
     "database.db_manager",
@@ -116,7 +117,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name="RetailAI_v2",
+    name="Retail Analytics",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -138,5 +139,5 @@ coll = COLLECT(
     strip=False,
     upx=True,
     upx_exclude=[],
-    name="RetailAI_v2",
+    name="Retail Analytics",
 )

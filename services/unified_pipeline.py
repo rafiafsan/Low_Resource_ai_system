@@ -130,12 +130,14 @@ class UnifiedRetailPipeline:
             cpu_limit_percent=float(self.config.get("safeguards", {}).get("cpu_limit_percent", 90.0)),
         )
 
-        # 6. Asynchronous PostgreSQL Database Writer
-        db_cfg = self.config.get("database", {})
+        # 6. Asynchronous API Gateway Event Writer
+        api_cfg = self.config.get("api") or self.config.get("database", {})
         shop_cfg = self.config.get("shop", {})
         self.db_manager = DatabaseManager(
-            credentials_file=db_cfg.get("credentials_file", "config/database.json"),
-            shop_id=int(shop_cfg.get("shop_id", 1)),
+            enable=api_cfg.get("enabled", True),
+            base_url=api_cfg.get("base_url"),
+            api_key=api_cfg.get("api_key"),
+            shop_id=int(shop_cfg.get("shop_id", 2)),
             camera_id=str(shop_cfg.get("camera_id", "cam_01")),
         )
 
@@ -175,10 +177,10 @@ class UnifiedRetailPipeline:
         self.recorded_db_demographics: Set[int] = set()
         self.recorded_entry_db_ids: Set[int] = set()
 
-        # Database periodic sync timers
+        # Periodic sync timers (API Gateway)
         self.last_metrics_sync = time.time()
         self.last_occupancy_sync = time.time()
-        self.occupancy_interval = float(db_cfg.get("occupancy_interval_minutes", 20.0)) * 60.0
+        self.occupancy_interval = float(api_cfg.get("occupancy_interval_minutes", 20.0)) * 60.0
 
         # Concurrency flags
         self.running = False
@@ -192,7 +194,7 @@ class UnifiedRetailPipeline:
         bbox: Optional[Tuple[int, int, int, int]] = None,
         direction: str = "ENTRY",
     ) -> None:
-        """Persist finalized or accumulated demographic profiling data for a track ID."""
+        """Persist finalized demographic profiling data for a VALIDATED track ID."""
         if track_id in self.recorded_db_demographics:
             return
         self.recorded_db_demographics.add(track_id)
@@ -205,9 +207,11 @@ class UnifiedRetailPipeline:
                 age_group = "Child"
             elif age_val < 30:
                 age_group = "Young Adult"
-            elif age_val < 70:
+            elif age_val < 50:
+                age_group = "Adult"
+            else:
                 age_group = "Senior"
-          
+
         gender_val = demo.final_gender.title() if demo.final_gender else "Unknown"
 
         if self.db_manager.enabled:
@@ -231,31 +235,15 @@ class UnifiedRetailPipeline:
         bbox: Optional[Tuple[int, int, int, int]] = None,
         direction: str = "ENTRY",
     ) -> None:
-        """Guarantee every tracking ID has age and gender recorded in PostgreSQL."""
-        if track_id in self.recorded_db_demographics:
-            return
-        self.recorded_db_demographics.add(track_id)
-
-        if self.db_manager.enabled:
-            self.db_manager.insert_demographic(
-                track_id=track_id,
-                timestamp=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                bbox=bbox,
-                direction=direction,
-                result_dict={
-                    "age_group": "Adult",
-                    "exact_age": 30,
-                    "gender": "Unknown",
-                    "confidence": "Estimated",
-                },
-            )
-            self.db_manager.update_entry_demographics(track_id, "Adult", "Unknown")
+        """No-op: Unvalidated tracks are never written to the database."""
+        pass
 
     def _on_demographic_result(self, track_id: int, age: float, gender: str) -> None:
-        """Instant callback invoked when MiVOLO worker finishes inference for a crop."""
-        if track_id in self.recorded_db_demographics:
+        """Callback invoked when MiVOLO worker finishes inference for a crop.
+        Only updates database if this track has ALREADY been validated as an entry.
+        """
+        if track_id not in self.recorded_entry_db_ids:
             return
-        self.recorded_db_demographics.add(track_id)
 
         age_val = int(round(age)) if age is not None else None
         age_group = "Adult"
@@ -271,18 +259,6 @@ class UnifiedRetailPipeline:
         gender_val = gender.title() if gender else "Unknown"
 
         if self.db_manager.enabled:
-            self.db_manager.insert_demographic(
-                track_id=track_id,
-                timestamp=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                bbox=None,
-                direction="ENTRY",
-                result_dict={
-                    "age_group": age_group,
-                    "exact_age": age_val,
-                    "gender": gender_val,
-                    "confidence": "High",
-                },
-            )
             self.db_manager.update_entry_demographics(track_id, age_group, gender_val)
 
     def _load_config(self) -> Dict:
@@ -371,21 +347,7 @@ class UnifiedRetailPipeline:
                 self.associator.evict_lost_tracks(lost_ids)
                 self.exit_validator.evict_lost_tracks(lost_ids)
                 if self.demographic_worker:
-                    # Guarantee: Persist any unrecorded demographic observations before track eviction
-                    if self.db_manager.enabled:
-                        for tid in lost_ids:
-                            if tid not in self.recorded_db_demographics:
-                                demo = self.demographic_worker.get_demographics(tid)
-                                if demo and demo.observations:
-                                    self._record_demographics_for_track(tid, demo)
-                                else:
-                                    self._record_fallback_demographics(tid)
                     self.demographic_worker.evict_lost_tracks(lost_ids)
-                else:
-                    if self.db_manager.enabled:
-                        for tid in lost_ids:
-                            if tid not in self.recorded_db_demographics:
-                                self._record_fallback_demographics(tid)
                 for tid in lost_ids:
                     self.monitored_for_demographics.discard(tid)
                     self.demographic_sampling_counts.pop(tid, None)
@@ -397,37 +359,18 @@ class UnifiedRetailPipeline:
                     t_id = person["track_id"]
                     ev = self.event_manager.process(t_id, person["center"], footfall_pts, footfall_ref)
                     if ev:
-                        ts_str = ev["timestamp"].strftime("%Y-%m-%d %H:%M:%S")
                         if ev["event_type"] == "ENTRY" and not ev.get("cancelled_exit"):
-                            self.recorded_entry_db_ids.add(t_id)
-                            # Pull any demographics observed so far
-                            demo = self.demographic_worker.get_demographics(t_id) if self.demographic_worker else None
-                            demo_dict = None
-                            if demo and demo.observations:
-                                avg_age = demo.average_age
-                                age_val = int(round(avg_age)) if avg_age is not None else None
-                                age_group = "Adult"
-                                if age_val is not None:
-                                    if age_val < 18:
-                                        age_group = "Child"
-                                    elif age_val < 30:
-                                        age_group = "Young Adult"
-                                    elif age_val < 50:
-                                        age_group = "Adult"
-                                    else:
-                                        age_group = "Senior"
-                                gender_val = demo.final_gender.title() if demo.final_gender else "Unknown"
-                                demo_dict = {"age_group": age_group, "gender": gender_val}
-
-                            rec = process_entry_event(t_id, ts_str, ev, demographics=demo_dict)
-                            if rec and self.db_manager.enabled:
-                                self.db_manager.insert_entry(**rec)
-                            print(f"[UnifiedPipeline] >>> RECORDED ENTRY: Track {t_id} (Total In={self.event_manager.entry_count})")
-                        elif ev["event_type"] == "EXIT" and not ev.get("cancelled_entry"):
-                            rec = process_exit_event(t_id, ts_str, ev)
-                            if rec and self.db_manager.enabled:
-                                self.db_manager.insert_exit(**rec)
-                            print(f"[UnifiedPipeline] >>> RECORDED EXIT: Track {t_id} (Total Out={self.event_manager.exit_count})")
+                            print(f"[UnifiedPipeline] Crossing detected (ENTRY): Track {t_id} (Dwell validation pending {self.event_manager.min_entry_dwell_seconds:.0f}s)...")
+                            if self.enable_demographics and not ram_crit:
+                                self.monitored_for_demographics.add(t_id)
+                                if t_id not in self.demographic_sampling_counts:
+                                    self.demographic_sampling_counts[t_id] = 0
+                        elif ev["event_type"] == "EXIT":
+                            if ev.get("cancelled_entry"):
+                                print(f"[UnifiedPipeline] Reversal detected: Track {t_id} exited before {self.event_manager.min_entry_dwell_seconds:.0f}s dwell -> ENTRY CANCELLED (0 entries, 0 exits sent).")
+                                self.monitored_for_demographics.discard(t_id)
+                            else:
+                                print(f"[UnifiedPipeline] Crossing detected (EXIT): Track {t_id} (Exit validation pending {self.event_manager.min_exit_dwell_seconds:.0f}s)...")
 
                     # Demographics Trigger
                     if self.enable_demographics and demo_pts and demo_ref and not ram_crit:
@@ -435,13 +378,48 @@ class UnifiedRetailPipeline:
                         if side == "INSIDE" and t_id not in self.monitored_for_demographics:
                             self.monitored_for_demographics.add(t_id)
                             self.demographic_sampling_counts[t_id] = 0
-                    elif self.enable_demographics and not ram_crit and t_id in self.recorded_entry_db_ids:
+                    elif self.enable_demographics and not ram_crit and (t_id in self.recorded_entry_db_ids or t_id in self.event_manager.pending_entries):
                         self.monitored_for_demographics.add(t_id)
                         if t_id not in self.demographic_sampling_counts:
                             self.demographic_sampling_counts[t_id] = 0
 
-            # Periodic state cleanup in event manager
-            self.event_manager.validate_pending()
+            # 5b. Periodic Dwell Validation -> Send to DB ONLY AFTER VALIDATION
+            validated_events = self.event_manager.validate_pending()
+            for val_ev in validated_events:
+                v_tid = val_ev["track_id"]
+                ts_str = val_ev["timestamp"].strftime("%Y-%m-%d %H:%M:%S")
+                if val_ev["event_type"] == "ENTRY":
+                    self.recorded_entry_db_ids.add(v_tid)
+                    demo = self.demographic_worker.get_demographics(v_tid) if self.demographic_worker else None
+                    demo_dict = None
+                    if demo and demo.observations:
+                        avg_age = demo.average_age
+                        age_val = int(round(avg_age)) if avg_age is not None else None
+                        age_group = "Adult"
+                        if age_val is not None:
+                            if age_val < 18:
+                                age_group = "Child"
+                            elif age_val < 30:
+                                age_group = "Young Adult"
+                            elif age_val < 50:
+                                age_group = "Adult"
+                            else:
+                                age_group = "Senior"
+                        gender_val = demo.final_gender.title() if demo.final_gender else "Unknown"
+                        demo_dict = {"age_group": age_group, "gender": gender_val}
+
+                    rec = process_entry_event(v_tid, ts_str, val_ev, demographics=demo_dict)
+                    if rec and self.db_manager.enabled:
+                        self.db_manager.insert_entry(**rec)
+                        if demo and demo.observations:
+                            self._record_demographics_for_track(v_tid, demo)
+                    print(f"[UnifiedPipeline] >>> VALIDATED ENTRY RECORDED: Track {v_tid} (Total Valid In={self.event_manager.validated_entry_count}, Dwell={val_ev.get('duration_seconds', 0):.1f}s)")
+                elif val_ev["event_type"] == "EXIT":
+                    rec = process_exit_event(v_tid, ts_str, val_ev)
+                    if rec and self.db_manager.enabled:
+                        self.db_manager.insert_exit(**rec)
+                    print(f"[UnifiedPipeline] >>> VALIDATED EXIT RECORDED: Track {v_tid} (Total Valid Out={self.event_manager.validated_exit_count}, Dwell={val_ev.get('duration_seconds', 0):.1f}s)")
+
             self.perf_monitor.gate_ms = (time.time() - t_gate_start) * 1000.0
 
             # 6. Bag Exit Verification (Temporal Correlation)
@@ -484,8 +462,8 @@ class UnifiedRetailPipeline:
                             if crop.size > 0:
                                 self.demographic_worker.submit_crop(t_id, crop)
 
-                    # Guarantee: Ensure every tracking ID's age & gender is recorded into database
-                    if t_id not in self.recorded_db_demographics:
+                    # For validated entries, record demographic profile if updated
+                    if t_id in self.recorded_entry_db_ids and t_id not in self.recorded_db_demographics:
                         demo = self.demographic_worker.get_demographics(t_id)
                         if demo and demo.observations:
                             self._record_demographics_for_track(t_id, demo, bbox=person["bbox"])
@@ -498,8 +476,8 @@ class UnifiedRetailPipeline:
                 if (now_t - self.last_metrics_sync) >= 5.0:
                     self.last_metrics_sync = now_t
                     self.db_manager.upsert_daily_metrics(
-                        in_count=self.event_manager.entry_count,
-                        out_count=self.event_manager.exit_count,
+                        in_count=self.event_manager.validated_entry_count,
+                        out_count=self.event_manager.validated_exit_count,
                         person_with_bag_exit=total_bag_exits,
                         demographics_count=len(self.recorded_db_demographics),
                     )
@@ -507,8 +485,8 @@ class UnifiedRetailPipeline:
                 if (now_t - self.last_occupancy_sync) >= self.occupancy_interval:
                     self.last_occupancy_sync = now_t
                     self.db_manager.insert_occupancy(
-                        valid_entries=self.event_manager.entry_count,
-                        valid_exits=self.event_manager.exit_count,
+                        valid_entries=self.event_manager.validated_entry_count,
+                        valid_exits=self.event_manager.validated_exit_count,
                     )
 
             # 9. Format Overlay Labels & Publish Snapshot to GUI Thread
@@ -551,16 +529,18 @@ class UnifiedRetailPipeline:
 
         if self.display:
             cv2.namedWindow(self.window_name, cv2.WINDOW_NORMAL)
+            print("[UnifiedPipeline] Entering display loop. Decoupled preview active.")
+        else:
+            print("[UnifiedPipeline] Running in Headless Mode (Zero GUI Overhead). Streaming events to API Gateway...")
 
-        print("[UnifiedPipeline] Entering display loop. Decoupled preview active.")
         try:
             while self.running:
-                ret, frame = self.reader.get_display_frame()
-                if not ret or frame is None:
-                    time.sleep(0.015)
-                    continue
-
                 if self.display:
+                    ret, frame = self.reader.get_display_frame()
+                    if not ret or frame is None:
+                        time.sleep(0.015)
+                        continue
+
                     # Draw virtual gate lines
                     self._draw_gates(frame)
 
@@ -618,8 +598,8 @@ class UnifiedRetailPipeline:
                     pending_dwell = len(self.event_manager.pending_entries) + len(self.event_manager.pending_exits)
                     self.perf_monitor.draw_hud(
                         frame=frame,
-                        entry_count=self.event_manager.entry_count,
-                        exit_count=self.event_manager.exit_count,
+                        entry_count=self.event_manager.validated_entry_count,
+                        exit_count=self.event_manager.validated_exit_count,
                         bag_exit_count=total_bag_exits,
                         active_profiling_count=profiling_count,
                         valid_entry_count=self.event_manager.validated_entry_count,
@@ -637,7 +617,7 @@ class UnifiedRetailPipeline:
                         self.gate_manager.load_config()
                         self._sync_gate_coordinates()
                 else:
-                    time.sleep(0.02)
+                    time.sleep(0.5)
 
         finally:
             self.stop()
@@ -651,18 +631,9 @@ class UnifiedRetailPipeline:
         if self.demographic_worker:
             self.demographic_worker.shutdown()
         if self.db_manager.enabled:
-            # Guarantee: Ensure any remaining active track IDs have demographics persisted
-            for tid in list(self.track_manager.active_ids):
-                if tid not in self.recorded_db_demographics:
-                    demo = self.demographic_worker.get_demographics(tid) if self.demographic_worker else None
-                    if demo and demo.observations:
-                        self._record_demographics_for_track(tid, demo)
-                    else:
-                        self._record_fallback_demographics(tid)
-
             self.db_manager.upsert_daily_metrics(
-                in_count=self.event_manager.entry_count,
-                out_count=self.event_manager.exit_count,
+                in_count=self.event_manager.validated_entry_count,
+                out_count=self.event_manager.validated_exit_count,
                 person_with_bag_exit=self.cached_total_bag_exits,
                 demographics_count=len(self.recorded_db_demographics),
             )
